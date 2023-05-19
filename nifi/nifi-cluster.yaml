@@ -1,0 +1,468 @@
+apiVersion: nifi.konpyutaika.com/v1
+kind: NifiCluster
+metadata:
+  name: sslnifi
+  namespace: sslnifi
+spec:
+  service:
+    headlessEnabled: true
+  zkAddress: "zookeeper.zookeeper.svc.cluster.local:2181"
+  zkPath: "/ssllnifi"
+  clusterImage: "apache/nifi:1.19.0"
+  oneNifiNodePerNode: false
+  controllerUserIdentity: admin
+  managedAdminUsers:
+    - identity: "admin@nifi.k8s"
+      name: "admin"
+  propagateLabels: true
+  initContainers:
+    - image: "nifi-utils:1"
+      name: init-nifi-utils
+      imagePullPolicy: IfNotPresent
+      command: [ "sh", "-c" ]
+      args:
+        - 'if [ -d external-resources ]; then rm -rf external-resources/*; fi; cp -vr /external-resources-files/* /external-resources;'
+      volumeMounts:
+        - name: nifi-external-resources
+          mountPath: "/external-resources"
+  nifiClusterTaskSpec:
+    retryDurationMinutes: 10
+  readOnlyConfig:
+    bootstrapProperties:
+      nifiJvmMemory: 1g
+    nifiProperties:
+      webProxyHosts:
+        - sslnifi-ca.sslnifi.cluster.local:8443
+      overrideConfigs: |
+        nifi.sensitive.props.key=4pFb0J06ozZaML9liHuis79hVk6QMcX3
+        nifi.security.user.authorizer=single-user-authorizer
+        nifi.security.allow.anonymous.authentication=false
+        nifi.security.user.login.identity.provider=single-user-provider
+        nifi.nar.library.autoload.directory=/opt/nifi/external-resources/nars
+    authorizerConfig:
+      replaceTemplateConfigMap:
+        name: "nifi-authorizers.cm"
+        namespace: sslnifi
+        data: authorizers_template
+    logbackConfig:
+      replaceConfigMap:
+        name: "nifi-authorizers.cm"
+        namespace: sslnifi
+        data: logbackConfig_template
+    loginIdentityProvidersConfig:
+      replaceTemplateConfigMap:
+        name: "nifi-authorizers.cm"
+        namespace: sslnifi
+        data: login_identity_providers_template
+  nodeConfigGroups:
+    default_group:
+      isNode: true
+      storageConfigs:
+        - mountPath: "/opt/nifi/external-resources"
+          name: nifi-external-resources
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 1Gi
+        - mountPath: "/opt/nifi/nifi-current/logs"
+          name: logs
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 1Gi
+        - mountPath: "/opt/nifi/extensions"
+          name: extensions-repository
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 1Gi
+        - mountPath: "/opt/nifi/data"
+          name: data
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 5Gi
+        - mountPath: "/opt/nifi/flowfile_repository"
+          name: flowfile-repository
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 2Gi
+        - mountPath: "/opt/nifi/nifi-current/conf"
+          name: conf
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 100Mi
+        - mountPath: "/opt/nifi/content_repository"
+          name: content-repository
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 2Gi
+        - mountPath: "/opt/nifi/provenance_repository"
+          name: provenance-repository
+          pvcSpec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: "standard"
+            resources:
+              requests:
+                storage: 2Gi
+      serviceAccountName: "default"
+      resourcesRequirements:
+        limits:
+          cpu: "2"
+          memory: 3Gi
+        requests:
+          cpu: "1"
+          memory: 1Gi
+  nodes:
+    - id: 0
+      nodeConfigGroup: "default_group"
+#      nodeConfig:
+#        nodeAffinity:
+#          requiredDuringSchedulingIgnoredDuringExecution:
+#            nodeSelectorTerms:
+#              - matchExpressions:
+#                  - key: kubernetes.io/hostname
+#                    operator: In
+#                    values:
+#                      - kind-worker3
+    - id: 1
+      nodeConfigGroup: "default_group"
+#      nodeConfig:
+#        nodeAffinity:
+#          requiredDuringSchedulingIgnoredDuringExecution:
+#            nodeSelectorTerms:
+#              - matchExpressions:
+#                - key: kubernetes.io/hostname
+#                  operator: In
+#                  values:
+#                    - kind-worker2
+#    - id: 2
+#      nodeConfigGroup: "default_group"
+#      nodeConfig:
+#        nodeAffinity:
+#          requiredDuringSchedulingIgnoredDuringExecution:
+#            nodeSelectorTerms:
+#              - matchExpressions:
+#                - key: kubernetes.io/hostname
+#                  operator: In
+#                  values:
+#                    - kind-worker
+  listenersConfig:
+    internalListeners:
+      - type: "https"
+        name: "https"
+        containerPort: 8443
+      - type: "cluster"
+        name: "cluster"
+        containerPort: 6007
+      - type: "s2s"
+        name: "s2s"
+        containerPort: 10000
+    sslSecrets:
+      create: true
+      clusterScoped: false
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nifi-authorizers.cm
+  namespace: sslnifi
+data:
+  authorizers_template: '{{- $nodeList := .NodeList }}
+{{- $clusterName := .ClusterName }}
+{{- $namespace := .Namespace }}<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<authorizers>
+    <userGroupProvider>
+        <identifier>file-user-group-provider</identifier>
+        <class>org.apache.nifi.authorization.FileUserGroupProvider</class>
+        <property name="Users File">../data/users.xml</property>
+        <property name="Legacy Authorized Users File"></property>
+        <property name="Initial User Identity admin">{{ .ControllerUser }}</property>
+        {{- range $i, $host := .NodeList }}
+        <property name="Initial User Identity {{ $i }}">{{ $host }}</property>
+        {{- end }}
+    </userGroupProvider>
+    <accessPolicyProvider>
+        <identifier>file-access-policy-provider</identifier>
+        <class>org.apache.nifi.authorization.FileAccessPolicyProvider</class>
+        <property name="User Group Provider">file-user-group-provider</property>
+        <property name="Authorizations File">../data/authorizations.xml</property>
+        <property name="Initial Admin Identity">{{ .ControllerUser }}</property>
+        <property name="Legacy Authorized Users File"></property>
+        {{- range $i, $host := .NodeList }}
+        <property name="Node Identity {{ $i }}">{{ $host }}</property>
+        {{- end }}
+        <property name="Node Group"></property>
+    </accessPolicyProvider>
+    <authorizer>
+        <identifier>file-provider</identifier>
+        <class>org.apache.nifi.authorization.StandardManagedAuthorizer</class>
+        <property name="Access Policy Provider">file-access-policy-provider</property>
+    </authorizer>
+    <authorizer>
+        <identifier>single-user-authorizer</identifier>
+        <class>org.apache.nifi.authorization.single.user.SingleUserAuthorizer</class>
+    </authorizer>
+</authorizers>'
+  login_identity_providers_template: '<loginIdentityProviders>
+    <provider>
+        <identifier>single-user-provider</identifier>
+        <class>org.apache.nifi.authentication.single.user.SingleUserLoginIdentityProvider</class>
+        <property name="Username">admin</property>
+        <property name="Password">$2b$12$nnQmnvE/vy3i9pKmdCcyMebp85SZCanQ8/.lgMq4C3q/LA.1Iuk5i</property>
+    </provider>
+</loginIdentityProviders>'
+  logbackConfig_template: '<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="30 seconds">
+    <contextListener class="ch.qos.logback.classic.jul.LevelChangePropagator">
+        <resetJUL>true</resetJUL>
+    </contextListener>
+    
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${org.apache.nifi.bootstrap.config.log.dir}/nifi-app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${org.apache.nifi.bootstrap.config.log.dir}/nifi-app_%d{yyyy-MM-dd_HH}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <immediateFlush>true</immediateFlush>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%date %level [%thread] %logger{40} %msg%n</pattern>
+        </encoder>
+    </appender>
+    
+    <appender name="USER_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${org.apache.nifi.bootstrap.config.log.dir}/nifi-user.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${org.apache.nifi.bootstrap.config.log.dir}/nifi-user_%d.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%date %level [%thread] %logger{40} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="BOOTSTRAP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${org.apache.nifi.bootstrap.config.log.dir}/nifi-bootstrap.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${org.apache.nifi.bootstrap.config.log.dir}/nifi-bootstrap_%d.log</fileNamePattern>
+            <maxHistory>5</maxHistory>
+        </rollingPolicy>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%date %level [%thread] %logger{40} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%date %level [%thread] %logger{40} %msg%n</pattern>
+        </encoder>
+    </appender>
+    
+    <logger name="org.apache.nifi" level="INFO"/>
+    <logger name="org.apache.nifi.processors" level="WARN"/>
+    <logger name="org.apache.nifi.processors.standard.LogAttribute" level="INFO"/>
+    <logger name="org.apache.nifi.processors.standard.LogMessage" level="INFO"/>
+    <logger name="org.apache.nifi.controller.repository.StandardProcessSession" level="WARN" />
+    
+    
+    <logger name="org.apache.zookeeper.ClientCnxn" level="ERROR" />
+    <logger name="org.apache.zookeeper.server.NIOServerCnxn" level="ERROR" />
+    <logger name="org.apache.zookeeper.server.NIOServerCnxnFactory" level="ERROR" />
+    <logger name="org.apache.zookeeper.server.quorum" level="ERROR" />
+    <logger name="org.apache.zookeeper.ZooKeeper" level="ERROR" />
+    <logger name="org.apache.zookeeper.server.PrepRequestProcessor" level="ERROR" />
+
+    <logger name="org.apache.calcite.runtime.CalciteException" level="OFF" />
+
+    <logger name="org.apache.curator.framework.recipes.leader.LeaderSelector" level="OFF" />
+    <logger name="org.apache.curator.ConnectionState" level="OFF" />
+    
+    <logger name="org.apache.nifi.cluster" level="DEBUG"/>
+
+    <logger name="org.apache.nifi.server.JettyServer" level="INFO"/>
+
+    <logger name="org.eclipse.jetty" level="INFO"/>
+
+    <logger name="org.springframework" level="ERROR"/>
+    
+    <logger name="org.glassfish.jersey.internal.Errors" level="ERROR"/>
+
+    <logger name="org.apache.nifi.web.security" level="DEBUG" additivity="false">
+        <appender-ref ref="USER_FILE"/>
+    </logger>
+    <logger name="org.apache.nifi.web.api.config" level="DEBUG" additivity="false">
+        <appender-ref ref="USER_FILE"/>
+    </logger>
+    <logger name="org.apache.nifi.authorization" level="DEBUG" additivity="false">
+        <appender-ref ref="USER_FILE"/>
+    </logger>
+    <logger name="org.apache.nifi.cluster.authorization" level="DEBUG" additivity="false">
+        <appender-ref ref="USER_FILE"/>
+    </logger>
+    <logger name="org.apache.nifi.web.filter.RequestLogger" level="DEBUG" additivity="false">
+        <appender-ref ref="USER_FILE"/>
+    </logger>
+
+
+    <logger name="org.apache.nifi.bootstrap" level="INFO" additivity="false">
+        <appender-ref ref="BOOTSTRAP_FILE" />
+    </logger>
+    <logger name="org.apache.nifi.bootstrap.Command" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="BOOTSTRAP_FILE" />
+    </logger>
+
+    <logger name="org.apache.nifi.StdOut" level="INFO" additivity="false">
+        <appender-ref ref="BOOTSTRAP_FILE" />
+    </logger>
+    
+    <logger name="org.apache.nifi.StdErr" level="ERROR" additivity="false">
+        <appender-ref ref="BOOTSTRAP_FILE" />
+    </logger>
+
+
+    <root level="INFO">
+        <appender-ref ref="APP_FILE"/>
+    </root>
+    
+</configuration>'
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi-svc
+  namespace: sslnifi
+  labels:
+    app: nifi
+    nodeId: "0"
+spec:
+  type: ClusterIP
+  selector:
+    app: nifi
+    nodeId: "0"
+  ports:
+    - port: 8443
+      targetPort: 8443
+      protocol: TCP
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nifi-ing
+  namespace: sslnifi
+  labels:
+    name: nifi
+  annotations:
+    ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  tls:
+    - hosts: [sslnifi-ca.sslnifi.cluster.local]
+      secretName: admin
+  ingressClassName: nginx
+  rules:
+    - host: sslnifi-ca.sslnifi.cluster.local
+      http:
+        paths:
+          - path: /nifi
+            pathType: Prefix
+            backend:
+              service:
+                name: nifi-svc
+                port:
+                  number: 8443
+          - path: /nifi-api
+            pathType: Prefix
+            backend:
+              service:
+                name: nifi-svc
+                port:
+                  number: 8443
+          - path: /nifi-docs
+            pathType: Prefix
+            backend:
+              service:
+                name: nifi-svc
+                port:
+                  number: 8443
+          - path: /nifi-content-viewer
+            pathType: Prefix
+            backend:
+              service:
+                name: nifi-svc
+                port:
+                  number: 8443
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi-svc-ext-reverse-proxy
+  namespace: sslnifi
+  labels:
+    app: nifi
+spec:
+  type: ClusterIP
+  selector:
+    app: nifi
+  ports:
+    - port: 5557
+      targetPort: 5557
+      protocol: TCP
+---
+
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nifi-ext-api
+  namespace: sslnifi
+  labels:
+    name: nifi
+  annotations:
+    ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sslnifi-ca.sslnifi.cluster.local
+      http:
+        paths:
+          - path: /test1_flow
+            pathType: Prefix
+            backend:
+              service:
+                name: sslnifi-headless
+                port:
+                  number: 5557
