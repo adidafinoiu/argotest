@@ -161,8 +161,8 @@ spec:
 #                  operator: In
 #                  values:
 #                    - kind-worker2
-#    - id: 2
-#      nodeConfigGroup: "default_group"
+    - id: 2
+      nodeConfigGroup: "default_group"
 #      nodeConfig:
 #        nodeAffinity:
 #          requiredDuringSchedulingIgnoredDuringExecution:
